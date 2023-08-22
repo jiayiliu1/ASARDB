@@ -1,0 +1,295 @@
+---
+title: "ASAR DB clean taxonomy duplicates"
+author: "Anatoly Sorokin"
+date: '`r format(Sys.time(), "%d.%m.%Y")`'
+output:
+  pdf_document:
+    keep_tex: yes
+    number_sections: yes
+  html_document: default
+params:
+  format: !r if(opts_knit$get("rmarkdown.pandoc.to") == 'html') c('screen', 'print')
+    else 'print'
+  version: !r if(nchar(Sys.which("git"))) system("git describe --long --dirty --abbrev=10  --tags  --always",
+    intern=TRUE) else date()
+header-includes:
+- \usepackage[T2A]{fontenc}
+- \usepackage[utf8]{inputenc}
+- \usepackage[english,russian]{babel}
+- \usepackage{grffile}
+- \usepackage{rotating}
+- \usepackage{caption}
+- \usepackage{longtable}
+- \usepackage{lscape}
+---
+```{r loadPackages, include=FALSE, cache=FALSE}
+## load additional packages in this chunk
+library(pander)
+library(knitr)
+library(ggplot2)
+library(xtable)
+library(reportRx)
+library(stringi)
+library(plyr)
+library(biomformat)
+library(RJSONIO)
+library(KEGGREST)
+library(data.table)
+library(DBI)
+library(MonetDB.R)
+numPrj<-165
+numPrjpairs<-100
+```
+
+```{r setup, include=FALSE, cache=FALSE}
+## This chunk should contain global configuration commands.
+## Use this to set knitr options and related things. Everything
+## in this chunk will be included in an appendix to document the
+## configuration used.
+#output <- opts_knit$get("rmarkdown.pandoc.to")
+opts_knit$set(stop_on_error = 2L)
+
+## By default R code is only included in HTML versions of the report
+## (where it can be collapsed). You can generate a PDF version
+## using rmarkdown::pdf_document to get a copy for print. Extensive
+## chunks of R code may or may not be desired in /hat setting. If you
+## want them simply change the following arguments to `echo = TRUE`.
+## In either case the default can be overwritten for individual chunks.
+#opts_chunk$set(echo = output=="html")
+#opts_chunk$set(warning = output=="html")
+#opts_chunk$set(message = output=="html")
+
+## Cache options
+opts_chunk$set(cache=FALSE)
+
+## Figure options
+## Set default figure format
+#options(reportmd.figure.format=params$format)
+
+## Set 'hide.fig.code' to FALSE to include code chunks that
+## produce Figures in the output. Note that this affects all chunks
+## that provide a figure caption.
+opts_chunk$set(hold=TRUE, hide.fig.code=FALSE)
+
+## Set up default plotting options for different formats.
+## These can be overwritten for individual chunks
+#interactiveFig()
+#screenFig()
+#printFig()
+
+## Pander options
+panderOptions("digits", 3)
+panderOptions("table.split.table", 160)
+
+## Configure Figure and Table lables
+#options(figcap.prefix = "Figure", figcap.sep = ":", figcap.prefix.highlight = "**")
+#options(tabcap.prefix = "Table", tabcap.sep = ":", tabcap.prefix.highlight = "**")
+
+## Install required knitr hooks
+#installHooks()
+```
+
+```{r functions, include=FALSE}
+## Custom functions used in the analysis should go into this chunk.
+## They will be listed in their own section of the appendix.
+printProjectsTable <-
+  function(mat,main,landscape = TRUE,digits = 0,sig = 0.01,align= 'lllrr') {
+    addtorow          <- list()
+    addtorow$pos      <- list()
+    addtorow$pos[[1]] <- c(0)
+    addtorow$command  <- c(
+      paste(
+        "\\hline \n",
+        "\\endhead \n",
+        "\\hline \n",
+        "\\multicolumn{3}{l}{\\footnotesize Continued on next page} \n",
+        "\\endfoot \n",
+        "\\endlastfoot \n",sep = ""
+      )
+    )
+    subset <- 'anode'
+    if (landscape) {
+      cat(
+        sprintf(
+          "\\newpage\n  \\begin{landscape} \n\\begin{center}\n\\captionof{table}{List of ASAR DB content, %s (%d projects)}\n\\scriptsize",
+          main,dim(mat)[1]
+        )
+      )
+    }else{
+      cat(
+        sprintf(
+          "\\begin{center}\n\\captionof{table}{List of ASAR DB content, %s (%d projects)}\n\\scriptsize",
+          main,dim(mat)[1]
+        )
+      )
+    }
+    alig <- 'lp{0.05\\linewidth}|lp{0.10\\linewidth}|p{0.65\\linewidth}|rp{0.10\\linewidth}|rp{0.10\\linewidth}'
+    cat(dim(mat),names(mat),'\n')
+    matU<-mat
+    # matU$name<-sanitizestr(mat$name)
+    # matU$description<-sanitizestr(mat$description)
+    # cat(dim(matU),names(matU),'\n')
+    print(
+      xtable(
+        matU,
+        align = align,#paste(align,collapse = ''),
+        digits = digits)
+      ,size = "small",include.colnames = TRUE,
+      tabular.environment = "longtable", sanitize.text.function=function(.x)sanitizestr(stri_escape_unicode(.x)),
+      floating = FALSE,include.rownames = FALSE,add.to.row = addtorow,hline.after =
+        c(-1)
+    )
+    if (landscape) {
+      cat("\\end{center}\n \\end{landscape}")
+    }else{
+      cat("\\end{center}\n ")
+    }
+    
+  }
+```
+
+```{r queries, include=FALSE}
+## Custom functions used in the analysis should go into this chunk.
+## They will be listed in their own section of the appendix.
+getTaxDups<-paste("select t.id rmid, tbl.id keepid,tbl.taxid,",
+                  "tbl.usp,tbl.name,tbl.cnt from(",
+                  "select min(t.id) as id,t.taxid,t.usp,t.name, count(distinct id) cnt ",
+                  "from taxlite t ",
+                  "group by t.taxid,t.usp,t.name ",
+                  "having count(distinct id)>1 ) tbl",
+                  "join taxlite t on t.taxid=tbl.taxid and t.usp=tbl.usp and t.name=tbl.name",
+                  "where t.id<>tbl.id")
+rmTaxMD5Dups<-paste("delete from md5_taxlite ",
+                    "where taxliteid=? and ",
+                    "md5id in ",
+                    "(select t1.md5id from md5_taxlite t1 join md5_taxlite t2 on t1.md5id=t2.md5id ",
+                    "where t1.taxliteid=? and t2.taxliteid=?)")
+rmTaxDups<- paste("delete from taxlite where id in (",
+                  "select distinct t.id id from( ",
+                  "select min(t.id) as id,t.taxid,t.usp,t.name, ",
+                  "count(distinct id) cnt  ",
+                  "from taxlite t  ",
+                  "group by t.taxid,t.usp,t.name  ",
+                  "having count(distinct id)>1 ) tbl ",
+                  "join taxlite t on t.taxid=tbl.taxid and ",
+                  "t.usp=tbl.usp and t.name=tbl.name where t.id<>tbl.id",
+                  "except select distinct taxliteid id from md5_taxlite);")
+updateTaxMD5Dups<-paste("update md5_taxlite set taxliteid=? ",
+                        "where taxliteid=?;")
+taxStat<-paste("select count(distinct a.md5md5sum) as cmd5",
+               ",count(distinct usp) as cusp",
+               ",count(distinct species) as cspecies",
+               ",count(distinct genus) as cgenus",
+               ",count(distinct family) as cfam",
+               ",count(distinct ordr) as cord",
+               ", count(distinct class) as cl ",
+               "from abundance a ",
+               "join md5_taxlite m on a.md5md5sum=m.md5md5sum ",
+               "join taxlite t on m.taxliteid=t.id")
+statTaxQtemplate<-paste("select st.smpl as smpl,count(distinct field) as cnt ",
+                     "from (",
+                     "select field,count(distinct sampleid) as smpl ",
+#                     "select field,count(distinct sampleid) as smpl,sum(abundance) as abund, max(abundance) as maxab ",
+                     "from abundance a join md5_taxlite m on a.md5md5sum=m.md5md5sum ",
+                     "join taxlite t on m.taxliteid=t.id ",
+                     "group by field",
+                     ") st ",
+                     "group by smpl ",
+                     "order by smpl")
+pairStatTaxMD5Qtemplate<-paste("select st.smpl as smpl,count(*) as cnt  ",
+                               "from ( ",
+                               "select field,a.md5md5sum,",
+                               "count(distinct sampleid) as smpl",
+                               #",sum(abundance) as abund",
+                               #", max(abundance) as maxab  ",
+                               "from abundance a join ",
+                               "md5_taxlite m on a.md5md5sum=m.md5md5sum  ",
+                               "join taxlite t on m.taxliteid=t.id  ",
+                               "group by field,a.md5md5sum ",
+                               ") st  ",
+                               "group by smpl  order by smpl;")
+```
+
+```{r db.con, include=FALSE}
+## Custom functions used in the analysis should go into this chunk.
+## They will be listed in their own section of the appendix.
+dbname<-'asar'
+usr<-'asar'
+pwd<-'asar'
+```
+
+# Read data
+Before running the code a number of variables should be setted for appropriate data loading:
+ 
+ 3. the name of the database *dbname*
+ 4. user/password for teh database: *usr* and *pwd*
+ 
+```{r check.values}
+if(!(exists('dbname')&
+     exists('usr')&
+     exists('pwd'))){
+  stop('not all obligatory parameters are provided\n')
+}
+```
+
+
+# Connect to DB
+```{r db.connect}
+conn <- dbConnect(MonetDB.R::MonetDB(), 
+                  dbname = dbname,
+                  user=usr,password=pwd,timeout=6400)
+```
+
+# Read duplicates
+
+```{r db.read.taxdups}
+taxdups<-dbGetQuery(conn,getTaxDups)
+dim(taxdups)
+pander(unique(taxdups[,-c(1,2)]),main = 'Taxonomy duplicates')
+```
+
+# Remove duplicate MD5-TaxLite pairs
+```{r db.rm.pairs}
+for(i in 1:dim(taxdups)[1]){
+  rmid<-taxdups$rmid[i]
+  keepid<-taxdups$keepid[i]
+  rs<-dbSendStatement(conn,rmTaxMD5Dups,rmid,rmid,keepid)
+  rs<-dbSendStatement(conn,updateTaxMD5Dups,keepid,rmid)
+}
+```
+
+# Remove duplicates from TaxLite
+```{r db.rm.taxldups}
+rs<-dbSendStatement(conn,rmTaxDups)
+```
+
+
+# Close connection
+```{r disconnect}
+dbDisconnect(conn)
+```
+
+
+# Appendix {.tabset}
+## Functions
+```{r functions, eval=FALSE, include=TRUE}
+```
+## Queries
+```{r queries, eval=FALSE, include=TRUE}
+```
+
+## Setup R
+```{r setup, eval=FALSE}
+```
+
+## Versions
+### Document version
+```{r docVersion, echo=FALSE, results='asis', cache=FALSE}
+cat(params$version)
+```
+
+### Session Info
+```{r sessionInfo, echo=FALSE, results='asis', class='text', warning=FALSE}
+pander(devtools::session_info())
+```
+

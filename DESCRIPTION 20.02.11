@@ -1,0 +1,17 @@
+Package: asarDB
+Type: Package
+Title: DataBase avare ASAR version
+Version: 0.1.2.11
+Author: Anatoly Sorokin
+Maintainer: Anatoly Sorokin <lptolik@gmail.comt>
+Description: More about what it does (maybe more than one line)
+    Use four spaces when indenting paragraphs within the Description.
+License: GPL (>= 3)
+Encoding: UTF-8
+LazyData: true
+Suggests: testthat,biomformat 
+Depends: data.table,dplyr,RJSONIO,DBI,shiny,d3heatmap,shinythemes,
+    rhandsontable,pathview,limma,KEGGREST,stringr,matrixStats,
+    gplots,plyr,png,vegan,taxize
+VignetteBuilder: knitr
+RoxygenNote: 7.2.3

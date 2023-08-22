@@ -1,0 +1,332 @@
+---
+title: "Prepare List of MG-RAST projects"
+author: "Anatoly Sorokin"
+date: '`r format(Sys.time(), "%d.%m.%Y")`'
+output:
+  pdf_document:
+    keep_tex: yes
+    number_sections: yes
+  html_document: default
+params:
+  format: !r if(opts_knit$get("rmarkdown.pandoc.to") == 'html') c('screen', 'print')
+    else 'print'
+  version: !r if(nchar(Sys.which("git"))) system("git describe --long --dirty --abbrev=10  --tags  --always",
+    intern=TRUE) else date()
+header-includes:
+- \usepackage{grffile}
+- \usepackage{rotating}
+- \usepackage{caption}
+- \usepackage{longtable}
+- \usepackage{lscape}
+---
+```{r loadPackages, include=FALSE, cache=FALSE}
+## load additional packages in this chunk
+library(pander)
+library(knitr)
+library(ggplot2)
+library(plyr)
+library(biomformat)
+library(RJSONIO)
+library(data.table)
+library(RCurl)
+library(xtable)
+library(reportRx)
+library(stringi)
+webkey<-'y8MLy5NRMBfCRGzPcxYP9b86c'
+```
+
+```{r setup, include=FALSE, cache=FALSE}
+## This chunk should contain global configuration commands.
+## Use this to set knitr options and related things. Everything
+## in this chunk will be included in an appendix to document the
+## configuration used.
+#output <- opts_knit$get("rmarkdown.pandoc.to")
+
+## By default R code is only included in HTML versions of the report
+## (where it can be collapsed). You can generate a PDF version
+## using rmarkdown::pdf_document to get a copy for print. Extensive
+## chunks of R code may or may not be desired in /hat setting. If you
+## want them simply change the following arguments to `echo = TRUE`.
+## In either case the default can be overwritten for individual chunks.
+#opts_chunk$set(echo = output=="html")
+#opts_chunk$set(warning = output=="html")
+#opts_chunk$set(message = output=="html")
+
+## Cache options
+opts_chunk$set(cache=FALSE)
+
+## Figure options
+## Set default figure format
+#options(reportmd.figure.format=params$format)
+
+## Set 'hide.fig.code' to FALSE to include code chunks that
+## produce Figures in the output. Note that this affects all chunks
+## that provide a figure caption.
+opts_chunk$set(hold=TRUE, hide.fig.code=FALSE)
+
+## Set up default plotting options for different formats.
+## These can be overwritten for individual chunks
+#interactiveFig()
+#screenFig()
+#printFig()
+
+## Pander options
+panderOptions("digits", 3)
+panderOptions("table.split.table", 160)
+
+## Configure Figure and Table lables
+#options(figcap.prefix = "Figure", figcap.sep = ":", figcap.prefix.highlight = "**")
+#options(tabcap.prefix = "Table", tabcap.sep = ":", tabcap.prefix.highlight = "**")
+
+## Install required knitr hooks
+#installHooks()
+```
+
+```{r functions, include=FALSE}
+## Custom functions used in the analysis should go into this chunk.
+## They will be listed in their own section of the appendix.
+extractOTU<-function(.x){
+.res<-data.frame(otu=gsub('(\\[|\\])','',
+                          unlist(
+                            strsplit(
+                              as.character(
+                                .x$semicolon.separated.list.of.annotations),
+                              ';'))))
+curl1<-'curl  -H "auth: "'
+curl2<-"\" -H 'Accept-Encoding: gzip,deflate' \"http://api-pql.metagenomics.anl.gov/1/matrix/organism?"
+curl3<-'&source=SEED&group_level=strain&result_type=abundance&hit_type=all&identity=60&length=15" -o mgm.biome'
+}
+
+printProjectsTable <-
+  function(mat,main,landscape = TRUE,digits = 1,sig = 0.01) {
+    addtorow          <- list()
+    addtorow$pos      <- list()
+    addtorow$pos[[1]] <- c(0)
+    addtorow$command  <- c(
+      paste(
+        "\\hline \n",
+        "\\endhead \n",
+        "\\hline \n",
+        "\\multicolumn{3}{l}{\\footnotesize Continued on next page} \n",
+        "\\endfoot \n",
+        "\\endlastfoot \n",sep = ""
+      )
+    )
+    subset <- 'anode'
+    if (landscape) {
+      cat(
+        sprintf(
+          "\\newpage\n  \\begin{landscape} \n\\begin{center}\n\\captionof{table}{List of MG-RAST projects, %s (%d projects)}\n\\scriptsize",
+          main,dim(mat)[1]
+        )
+      )
+    }else{
+      cat(
+        sprintf(
+          "\\begin{center}\n\\captionof{table}{List of MG-RAST projects, %s (%d projects)}\n\\scriptsize",
+          main,dim(mat)[1]
+        )
+      )
+    }
+    alig <- 'lp{0.08\\linewidth}|p{0.22\\linewidth}|p{0.05\\linewidth}|p{0.65\\linewidth}'
+    cat(dim(mat),names(mat),'\n')
+    matU<-mat
+    # matU$name<-sanitizestr(mat$name)
+    # matU$description<-sanitizestr(mat$description)
+    # cat(dim(matU),names(matU),'\n')
+    print(
+      xtable(
+        matU,
+        align = paste(alig,collapse = ''),digits = digits)
+      ,size = "small",include.colnames = TRUE,
+      tabular.environment = "longtable", sanitize.text.function=function(.x)sanitizestr(stri_escape_unicode(.x)),
+      floating = FALSE,include.rownames = FALSE,add.to.row = addtorow,hline.after =
+        c(-1)
+    )
+    if (landscape) {
+      cat("\\end{center}\n \\end{landscape}")
+    }else{
+      cat("\\end{center}\n ")
+    }
+    
+  }
+
+printMetagenomesTable <-
+  function(mat,main) {
+    addtorow          <- list()
+    addtorow$pos      <- list()
+    addtorow$pos[[1]] <- c(0)
+    addtorow$command  <- c(
+      paste(
+        "\\hline \n",
+        "\\endhead \n",
+        "\\hline \n",
+        "\\multicolumn{3}{l}{\\footnotesize Continued on next page} \n",
+        "\\endfoot \n",
+        "\\endlastfoot \n",sep = ""
+      )
+    )
+      cat(
+        sprintf(
+          "\\begin{center}\n\\captionof{table}{List of MG-RAST metagenomes, %s (%d metagenomes)}\n\\scriptsize",
+          main,dim(mat)[1]
+        )
+      )
+    alig <- 'lp{0.15\\linewidth}|p{0.3\\linewidth}|p{0.08\\linewidth}|p{0.08\\linewidth}|p{0.4\\linewidth}'
+    matU<-mat
+    print(
+      xtable(
+        matU,
+        align = alig)
+      ,size = "small",include.colnames = TRUE,
+      tabular.environment = "longtable",
+      sanitize.text.function=function(.x)sanitizestr(stri_escape_unicode(.x)),
+      floating = FALSE,include.rownames = FALSE,add.to.row = addtorow,hline.after =
+        c(-1)
+    )
+      cat("\\end{center}\n ")
+
+  }
+
+```
+
+# Read the project
+
+Before running the code there should be two variables setted for appropriate collection of the data:
+ 
+ 1. the access key in the *webkey* 
+
+```{r get.the.project,echo=FALSE}
+    server.resource <-
+      "api.metagenomics.anl.gov/project"
+    message("Loading the annotations form MG-RAST",
+            domain = NA)
+    message("The time spent in this step is proportional to the total amount of remote data...")
+    param <-
+      list(
+        limit=50000,
+        verbosity = 'verbose',
+        auth = webkey
+      )
+    anno <- tryCatch(
+      getForm(
+        server.resource,
+        .params = param,
+        .opts = list(
+          noprogress = TRUE)
+      ),
+      error = function(e) {
+        msg <- conditionMessage(e)
+        structure(msg, class = "try-error")
+      }
+    )
+    if (inherits(anno, "try-error")) {
+      warning(anno)
+      return(FALSE)
+    }
+    invalid.source <- which(grepl("Invalid\\s+ontology\\s+source",
+                                  anno))
+    if (length(invalid.source))
+      stop("invalid ontology source")
+    if (length(which(grepl("insufficient\\s+permissions",
+                           anno))))
+      stop("invalid webkey")
+    anno <- fromJSON(
+      textConnection(anno),
+      header = FALSE,
+      sep = "\t",
+      stringsAsFactor = F
+    )
+projects<-ldply(anno$data,
+                function(.x)as.data.frame(.x[c("id",#0.05
+                                               "name",#0.25
+                                               "status",#0.1
+                                               "description")],#0.6
+                                          stringsAsFactors=FALSE))
+metagenomes <-ldply(anno$data,function(.x){
+  if(length(.x$metagenomes)>0){
+    cbind(data.frame(metagenome_id=sapply(.x$metagenomes,function(.y)as.list(.y)$metagenome_id),
+                     mgname=sapply(.x$metagenomes,function(.y)as.list(.y)$name)),
+          as.data.frame(.x[c("id","status","name")],stringsAsFactors=FALSE))
+  }else{
+    cbind(data.frame(metagenome_id="",mgname=''),
+          as.data.frame(.x[c("id","status","name")],stringsAsFactors=FALSE))
+  }
+})
+```
+
+### Own private metagenomes
+
+```{r own.project.description,echo=FALSE,results='asis'}
+printProjectsTable(projects[projects$status=='private',],'Own projects')
+```
+
+### Soil metagenomes
+
+```{r soil.project.description,echo=FALSE,results='asis'}
+idSoil<-grep('soil',projects$name)
+printProjectsTable(projects[idSoil,],'Soil projects')
+```
+
+
+## List of metagenomes
+
+### Own private metagenomes
+```{r list.own.metagenomes,echo=FALSE,results='asis'}
+printMetagenomesTable(metagenomes[metagenomes$status=='private',],'Own projects')
+```
+
+### Soil metagenomes
+
+```{r list.soil.metagenomes,echo=FALSE,results='asis'}
+soilPrjID<-projects$id[idSoil]
+printMetagenomesTable(metagenomes[metagenomes$id %in% soilPrjID,],'Soil projects')
+```
+
+
+# Prepare download scripts
+```{r make.local.scripts,echo=FALSE}
+lines<-c('#!/bin/bash','mkdir -p ./MGRAST/own', 'cp getMGRAST.local.sh ./MGRAST/own','cd ./MGRAST/own', 
+         sapply(metagenomes$metagenome_id[metagenomes$status=='private'],
+                function(.x)paste0('getMGRAST.local.sh ', webkey,' ',.x)),
+         'cd ../../')
+writeLines(lines,'submit.own.local.sh')
+system('chmod a+x submit.own.local.sh')
+```
+
+```{r make.soil.scripts,echo=FALSE}
+lines<-c('#!/bin/bash','mkdir -p ./MGRAST/soil', 'cp getMGRAST.local.sh ./MGRAST/soil','cd ./MGRAST/soil',
+         sapply(metagenomes$metagenome_id[metagenomes$id %in% soilPrjID],
+                function(.x)paste0('getMGRAST.local.sh ',webkey,' ',.x)),
+         'cd ../../')
+writeLines(lines,'submit.soil.local.sh')
+system('chmod a+x submit.soil.local.sh')
+```
+In the same folder with this report you can find *submit.sh* file which is required to fetch all data from MG-RAST server via API. To run the script on Sango type
+
+```
+./submit.own.local.sh
+./submit.soil.loca.sh
+
+```
+
+Once all jobs are finished run the *checkDownload.R*:
+```
+./checkDownload.R
+```
+If some files are missing or partially downloaded *checkDownload.R* script will create *resubmit.<date.time>.sh* script, which will reload missing files. 
+
+If download is complete and functional the *checkDownload.R* script will create Rdata file ready for use in ASAR. 
+
+
+## Versions
+### Versions of the document
+```{r docVersion, echo=FALSE, results='asis', cache=FALSE}
+cat(params$version)
+```
+
+### Session Info
+```{r sessionInfo, echo=FALSE, results='asis', class='text', warning=FALSE}
+pander(devtools::session_info())
+```
+

@@ -1,0 +1,205 @@
+---
+title: "load2DB"
+author: "Anatoly Sorokin"
+date: '`r format(Sys.time(), "%d.%m.%Y")`'
+output:
+  pdf_document:
+    keep_tex: yes
+    number_sections: yes
+  html_document: default
+params:
+  format: !r if(opts_knit$get("rmarkdown.pandoc.to") == 'html') c('screen', 'print')
+    else 'print'
+  version: !r if(nchar(Sys.which("git"))) system("git describe --long --dirty --abbrev=10  --tags  --always",
+    intern=TRUE) else date()
+header-includes:
+- \usepackage[T2A]{fontenc}
+- \usepackage[utf8]{inputenc}
+- \usepackage[english,russian]{babel}
+- \usepackage{grffile}
+- \usepackage{rotating}
+- \usepackage{caption}
+- \usepackage{longtable}
+- \usepackage{lscape}
+---
+```{r loadPackages, include=FALSE, cache=FALSE}
+## load additional packages in this chunk
+library(pander)
+library(knitr)
+library(ggplot2)
+library(dplyr)
+library(biomformat)
+library(RJSONIO)
+library(stringr)
+library(data.table)
+library(DBI)
+library(MonetDB.R)
+library(asarDB)
+```
+
+```{r setup, include=FALSE, cache=FALSE}
+## This chunk should contain global configuration commands.
+## Use this to set knitr options and related things. Everything
+## in this chunk will be included in an appendix to document the
+## configuration used.
+#output <- opts_knit$get("rmarkdown.pandoc.to")
+opts_knit$set(stop_on_error = 2L)
+
+## By default R code is only included in HTML versions of the report
+## (where it can be collapsed). You can generate a PDF version
+## using rmarkdown::pdf_document to get a copy for print. Extensive
+## chunks of R code may or may not be desired in /hat setting. If you
+## want them simply change the following arguments to `echo = TRUE`.
+## In either case the default can be overwritten for individual chunks.
+#opts_chunk$set(echo = output=="html")
+#opts_chunk$set(warning = output=="html")
+#opts_chunk$set(message = output=="html")
+
+## Cache options
+opts_chunk$set(cache=FALSE)
+
+## Figure options
+## Set default figure format
+#options(reportmd.figure.format=params$format)
+
+## Set 'hide.fig.code' to FALSE to include code chunks that
+## produce Figures in the output. Note that this affects all chunks
+## that provide a figure caption.
+opts_chunk$set(hold=TRUE, hide.fig.code=FALSE)
+
+## Set up default plotting options for different formats.
+## These can be overwritten for individual chunks
+#interactiveFig()
+#screenFig()
+#printFig()
+
+## Pander options
+panderOptions("digits", 3)
+panderOptions("table.split.table", 160)
+
+## Configure Figure and Table lables
+#options(figcap.prefix = "Figure", figcap.sep = ":", figcap.prefix.highlight = "**")
+#options(tabcap.prefix = "Table", tabcap.sep = ":", tabcap.prefix.highlight = "**")
+
+## Install required knitr hooks
+#installHooks()
+```
+
+```{r functions, include=FALSE}
+## Custom functions used in the analysis should go into this chunk.
+## They will be listed in their own section of the appendix.
+
+getKOrtid<-function(ortid){
+  return(as.integer(sub('^K','',ortid)))
+}
+
+getKeggPathid<-function(pathid){
+  return(as.integer(sub('^ko','',pathid)))
+}
+
+```
+
+# Read data
+Before running the code a number of variables should be setted for appropriate data loading:
+ 
+ 1. the path to the pathview data RData file *dtPath* 
+ 2. the metaproject name *mprjName*, if missing then the project won't be assigned to the metaproject
+ 2. the project ID in the *prjID*
+ 3. the name of the database *dbname*
+ 4. user/password for the database: *usr* and *pwd*
+ 
+ There are two optional parameters *prjName* and *prjDesc* could be provided. If missing both variables will be the substituted with *prjID*.
+```{r check.values}
+if(!(exists('dtPath')&
+     exists('prjID')&
+     exists('dbname')&
+     exists('usr')&
+     exists('pwd'))){
+  stop('not all obligatory parameters are provided\n')
+}
+if((!exists('prjName'))){prjName<-prjID}
+if(!exists('prjDesc')){prjDesc<-paste0('project.',prjID)}
+if(nchar(trimws(prjName))==0){prjName<-prjID}
+```
+
+
+# Load data to DB
+```{r db.connect}
+conn <- dbConnect(MonetDB.R::MonetDB.R(), 
+                  dbname = dbname,
+                  user=usr,password=pwd,
+        timeout = 1200)
+```
+
+## metaProject
+Meta-project is large project combining several metagenome studies into one. For example, Enrichment project, or Mizuho. 
+
+```{r insert.metaproject,eval=exists('mprjName')}
+prjDB<-dbReadTable(conn,'metaproject')
+idx<-which(prjDB$name==mprjName)
+if(length(idx)==0){
+  rs<-dbSendStatement(conn,
+                       paste('INSERT INTO',
+                             'metaproject (name,description)', 
+                             'VALUES (?,?);'),
+                      mprjName,mprjName)
+  dbHasCompleted(rs)
+  dbGetRowsAffected(rs)
+  dbClearResult(rs)
+  prjDB<-dbReadTable(conn,'metaproject')
+  idx<-which(prjDB$name==mprjName)
+}
+idPRJ<-prjDB$id[idx]
+```
+
+## Study
+In this DB study is equvivalent to the MG-RAST project
+
+```{r insert.study}
+loadStudy2DB(conn = conn,prjID = prjID,prjName = prjName,prjDesc = prjDesc,path = './')
+```
+## Check for the quality of upload
+```{r get.study.table}
+studyDB<-dbReadTable(conn,'study')
+idxPr<-which(studyDB$mgrastid==prjID)
+```
+```{r render.study.table}
+pander(studyDB)
+```
+
+
+```{r get.sample.table}
+  samples<-as.data.frame(conn %>% tbl('smpl_stat') %>%
+                  dplyr::filter(project==prjID) #%>%
+                  #dplyr::select(c('name','mgrastid','description'))
+                  )
+```
+
+```{r render.sample.table}
+pander(samples)
+```
+
+```{r close.connection}
+dbDisconnect(conn)
+```
+
+# Appendix {.tabset}
+## Functions
+```{r functions, eval=FALSE, include=TRUE}
+```
+
+## Setup R
+```{r setup, eval=FALSE}
+```
+
+## Versions
+### Document version
+```{r docVersion, echo=FALSE, results='asis', cache=FALSE}
+cat(params$version)
+```
+
+### Session Info
+```{r sessionInfo, echo=FALSE, results='asis', class='text', warning=FALSE}
+pander(devtools::session_info())
+```
+

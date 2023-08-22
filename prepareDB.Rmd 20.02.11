@@ -1,0 +1,368 @@
+---
+title: "load2DB"
+author: "Anatoly Sorokin"
+date: '`r format(Sys.time(), "%d.%m.%Y")`'
+output:
+  pdf_document:
+    keep_tex: yes
+    number_sections: yes
+  html_document: default
+params:
+  format: !r if(opts_knit$get("rmarkdown.pandoc.to") == 'html') c('screen', 'print')
+    else 'print'
+  version: !r if(nchar(Sys.which("git"))) system("git describe --long --dirty --abbrev=10  --tags  --always",
+    intern=TRUE) else date()
+header-includes:
+- \usepackage[T2A]{fontenc}
+- \usepackage[utf8]{inputenc}
+- \usepackage[english,russian]{babel}
+- \usepackage{grffile}
+- \usepackage{rotating}
+- \usepackage{caption}
+- \usepackage{longtable}
+- \usepackage{lscape}
+---
+```{r loadPackages, include=FALSE, cache=FALSE}
+## load additional packages in this chunk
+library(pander)
+library(knitr)
+library(ggplot2)
+library(plyr)
+library(biomformat)
+library(RJSONIO)
+library(KEGGREST)
+library(data.table)
+library(DBI)
+library(MonetDB.R)
+```
+
+```{r setup, include=FALSE, cache=FALSE}
+## This chunk should contain global configuration commands.
+## Use this to set knitr options and related things. Everything
+## in this chunk will be included in an appendix to document the
+## configuration used.
+#output <- opts_knit$get("rmarkdown.pandoc.to")
+opts_knit$set(stop_on_error = 2L)
+
+## By default R code is only included in HTML versions of the report
+## (where it can be collapsed). You can generate a PDF version
+## using rmarkdown::pdf_document to get a copy for print. Extensive
+## chunks of R code may or may not be desired in /hat setting. If you
+## want them simply change the following arguments to `echo = TRUE`.
+## In either case the default can be overwritten for individual chunks.
+#opts_chunk$set(echo = output=="html")
+#opts_chunk$set(warning = output=="html")
+#opts_chunk$set(message = output=="html")
+
+## Cache options
+opts_chunk$set(cache=FALSE)
+
+## Figure options
+## Set default figure format
+#options(reportmd.figure.format=params$format)
+
+## Set 'hide.fig.code' to FALSE to include code chunks that
+## produce Figures in the output. Note that this affects all chunks
+## that provide a figure caption.
+opts_chunk$set(hold=TRUE, hide.fig.code=FALSE)
+
+## Set up default plotting options for different formats.
+## These can be overwritten for individual chunks
+#interactiveFig()
+#screenFig()
+#printFig()
+
+## Pander options
+panderOptions("digits", 3)
+panderOptions("table.split.table", 160)
+
+## Configure Figure and Table lables
+#options(figcap.prefix = "Figure", figcap.sep = ":", figcap.prefix.highlight = "**")
+#options(tabcap.prefix = "Table", tabcap.sep = ":", tabcap.prefix.highlight = "**")
+
+## Install required knitr hooks
+#installHooks()
+```
+
+```{r functions, include=FALSE}
+## Custom functions used in the analysis should go into this chunk.
+## They will be listed in their own section of the appendix.
+extractOTU<-function(.x){
+.res<-data.frame(otu=gsub('(\\[|\\])','',
+                          unlist(
+                            strsplit(
+                              as.character(
+                                .x$semicolon.separated.list.of.annotations),
+                              ';'))))
+}
+#'Loading files output by MG-RAST with functional analysis by SEED.
+#' 
+#' After entering location of a file (path) and name of the file (pattern), this function reads in information from the file as a list.
+#' @usage load.fdata.from.file(path)
+#' @param path location of a file that should be input.
+#' @return list called "fannot" 
+#' @export
+#' @example load.fdata.from.file(path = ".")
+#' command ">fannot <- load.fdata.from.file()" should be run
+load.fdata.from.file <- function(path = ".") {
+  flist<-dir(path = path, pattern = "*.3.fseed$")
+  cat(paste(flist,collapse = "\n"))
+  fannot<-lapply(flist,function(.x){fread(paste0('ghead -n -1 ./', .x),sep='\t',header = TRUE)})
+  return(fannot)
+}
+
+#'Loading file KEGG Orthology output by MG-RAST.
+#' 
+#' After entering location of a file (path) and name of the file (pattern), this function reads in information from the file as a list.
+#' @usage load.kodata.from.file (path)
+#' @param path location of a file that should be input.
+#' @return list called "ko" 
+#' @export
+#' @example load.kodata.from.file()
+#'@return list "ko"
+#' command ">ko <- load.kodata.from.file()" should be run
+load.kodata.from.file <- function(path = '.') {
+  klist<-dir(path = path, pattern = '^m.*.ko$')
+  cat(paste(klist,collapse = '\n'))
+  ko<-lapply(klist,function(.x){fread(paste0('ghead -n -1 ./', .x),sep='\t',header = TRUE)})
+}
+#'Loading files output by MG-RAST with functional and taxonomical analysis by SEED.
+#' 
+#' After entering location of a file (path) and name of the file (pattern), this function reads in information from the file as a list.
+#' @usage load.kodata.from.file (path)
+#' @param path location of a file that should be input.
+#' @return list called "ko" 
+#' @export
+#' @example load.sdata.from.file()
+#'@return list "sannot"
+#' command ">sannot <- load.sdata.from.file()" should be run
+load.sdata.from.file <- function(path = '.') {
+  slist<-dir(path = path,pattern = '*.3.seed$')
+  flist<-dir(path = path, pattern = "*.3.fseed$")
+  cat(paste(slist,collapse = '\n'))
+  if(length(slist)!=length(flist)) stop('Length of functional and specie annotation should match\n')
+  sannot<-lapply(slist,function(.x){fread(paste0('ghead -n -1 ./', .x),sep='\t',header = TRUE)})
+}
+
+getKOrtid<-function(ortid){
+  return(as.integer(sub('^K','',ortid)))
+}
+
+getKeggPathid<-function(pathid){
+  return(as.integer(sub('^ko','',pathid)))
+}
+getTaxonomy<-function(sub){
+#sources <- gnr_datasources()
+#ncbi <- sources$id[sources$title == 'NCBI']
+  Sys.sleep(5)
+  cat(sub$name[1],dim(sub),'\n')
+taxCLS<-classification(sub$taxid,db='ncbi')
+txTab<-ldply(taxCLS,.fun = function(.x){
+  if(any(is.na(.x))){
+    res<-data.frame(species=NA,
+                    genus=NA,
+                    family=NA,
+                    order=NA,
+                    class=NA,
+                    phylum=NA,
+                    domain=NA)
+  }else{
+    res<-data.frame(species=ifelse(any(.x$rank=='species'),.x$name[.x$rank=='species'],NA),
+                    genus=ifelse(any(.x$rank=='genus'),.x$name[.x$rank=='genus'],NA),
+                    family=ifelse(any(.x$rank=='family'),.x$name[.x$rank=='family'],NA),
+                    order=ifelse(any(.x$rank=='order'),.x$name[.x$rank=='order'],NA),
+                    class=ifelse(any(.x$rank=='class'),.x$name[.x$rank=='class'],'NA'),
+                    phylum=ifelse(any(.x$rank=='phylum'),.x$name[.x$rank=='phylum'],'NA'),
+                    domain=ifelse(any(.x$rank=='superkingdom'),.x$name[.x$rank=='superkingdom'],NA))
+  }
+  return(res)})
+taxL<-merge(sub,txTab,by.x='name',by.y='.id')
+return(taxL)
+}
+dbname<-'asar'
+usr<-'asar'
+pwd<-'asar'
+```
+
+# Read data
+Before running the code a number of variables should be setted for appropriate data loading:
+ 
+ 3. the name of the database *dbname*
+ 4. user/password for teh database: *usr* and *pwd*
+ 
+```{r check.values}
+if(!(exists('dbname')&
+     exists('usr')&
+     exists('pwd'))){
+  stop('not all obligatory parameters are provided\n')
+}
+```
+
+
+# Connect to DB
+```{r db.connect}
+conn <- dbConnect(MonetDB.R::MonetDB(), 
+                  dbname = dbname,
+                  user=usr,password=pwd)
+```
+
+# Load static data to DB
+
+## Functions
+```{r insert.functions}
+load('./data/subsystems.RData')
+subDF$level2<-as.character(subDF$level2)
+subDF$level2[which(is.na(subDF$level2))]<-''
+rs<-dbSendStatement(conn,
+                       paste('CREATE TABLE asarLite.fun_tmp (',
+'  accession varchar(32) NOT NULL,',
+'  level1 varchar(4055) NOT NULL, ',
+'  level2 varchar(4055) NOT NULL,', 
+'  level3 varchar(4055) NOT NULL,', 
+'  level4 varchar(4055) NOT NULL)'))
+
+fwrite(subDF,file='./sub.tmp',col.names=FALSE,append=FALSE,quote=FALSE,sep='$',row.names=FALSE,na='')
+  sigFname<-normalizePath('./sub.tmp')
+  system(paste0('mclient  -d asar  -s  "COPY INTO asarlite.fun_tmp  FROM ',"'",sigFname,"'",' DELIMITERS \'$\';"'),intern = TRUE)->mcOut
+rs<-dbSendStatement(conn,
+                       paste('INSERT INTO',
+                             'seedlite (accession,fun1,fun2,fun3,fun4)', 
+                             '(select distinct accession,level4,level3,level2,level1 from fun_tmp)'))
+  dbHasCompleted(rs)
+  dbGetRowsAffected(rs)
+  dbClearResult(rs)
+  rs<-dbSendStatement(conn,'drop table asarLite.fun_tmp')
+```
+
+## Taxonomy
+In this DB study is equvivalent to the MG-RAST project
+
+```
+{r prepare.taxonomy}
+nd<-read.delim('~/Downloads/new_taxdump/nodes.dmp',header=FALSE,sep='|')
+names(nd)<-c('tax_id',
+                'parent_tax_id','rank','embl_code',
+                'division_id','inherited_div_flag',
+                'genetic_code_id','inherited_GC_flag',
+                'mitochondrial_genetic_code_id',
+                'inherited_MGC_flag','GenBank_hidden_flag',
+                'hidden_subtree_root_flag','comments')
+nd$rank<-gsub('\t','',nd$rank)
+nd$comments<-gsub('\t','',nd$comments)
+nd$`embl_code`<-gsub('\t','',nd$`embl_code`)
+nd<-nd[,!is.na(names(nd))]
+lin<-read.delim('~/Downloads/new_taxdump/fullnamelineage.dmp',header=FALSE,sep='|')
+names(lin)<-c('taxid','name','lineage','v')
+lin$name<-trimws(lin$name)
+fndid<-c(2,2157)
+fndid1<-nd$tax_id[nd$parent_tax_id %in% fndid]
+lfndid1<-0
+while(lfndid1!=length(fndid1)){
+  unique(c(fndid,fndid1))->fndid
+  lfndid1<-length(fndid1)
+  cat(lfndid1,length(fndid1),length(fndid),'\n')
+  fndid1<-nd$tax_id[nd$parent_tax_id %in% fndid]
+}
+unique(c(fndid,fndid1))->fndid
+spid<-nd$tax_id[(nd$tax_id  %in% fndid)&(nd$rank=='species')]
+subspid<-nd$tax_id[nd$parent_tax_id %in% spid]
+sublin<-lin[which(lin$taxid %in% subspid),c(1:2)]
+splin<-lin[which(lin$taxid %in% spid),c(1:2)]
+spl<-split(sublin$taxid,c(rep(1:(dim(sublin)[1]/50),50),1:(dim(sublin)[1]%%50)))
+sources <- gnr_datasources()
+ncbi <- sources$id[sources$title == 'NCBI']
+taxCLS<-classification(sublin$taxid,db='ncbi')
+txTab<-ldply(taxCLS,.fun = function(.x){
+  if(any(is.na(.x))){
+    res<-data.frame(species=NA,
+                    genus=NA,
+                    family=NA,
+                    order=NA,
+                    class=NA,
+                    phylum=NA,
+                    domain=NA)
+  }else{
+    res<-data.frame(species=ifelse(any(.x$rank=='species'),.x$name[.x$rank=='species'],NA),
+                    genus=ifelse(any(.x$rank=='genus'),.x$name[.x$rank=='genus'],NA),
+                    family=ifelse(any(.x$rank=='family'),.x$name[.x$rank=='family'],NA),
+                    order=ifelse(any(.x$rank=='order'),.x$name[.x$rank=='order'],NA),
+                    class=ifelse(any(.x$rank=='class'),.x$name[.x$rank=='class'],'NA'),
+                    phylum=ifelse(any(.x$rank=='phylum'),.x$name[.x$rank=='phylum'],'NA'),
+                    domain=ifelse(any(.x$rank=='superkingdom'),.x$name[.x$rank=='superkingdom'],NA))
+  }
+  return(res)})
+taxL<-merge(sublin,txTab,by.x='name',by.y='.id')
+```
+
+```{r load.tax.data}
+load('data/taxInit.RData')
+dbWriteTable(conn,'tax_tmp',taxDF,overwrite=TRUE,temporary=TRUE)
+  rs<-dbSendStatement(conn,
+                       paste('INSERT INTO',
+                             'taxlite (taxid,usp,name,species,genus,family,ordr,class,phylum,dom)', 
+                             '(select taxid,usp,name,species,genus,family,ordr,class,phylum,dom from tax_tmp);'))
+  dbHasCompleted(rs)
+  dbGetRowsAffected(rs)
+  dbClearResult(rs)
+
+```
+
+## KEGG
+```{r load.kegg}
+load('data/keggmappings.Rdata')
+ko.path.name$id<-getKeggPathid(ko.path.name$ko)
+dbWriteTable(conn,'path_tmp',ko.path.name,overwrite=TRUE,temporary=TRUE)
+  rs<-dbSendStatement(conn,
+                       paste('INSERT INTO',
+                             'keggpath (id,name)', 
+                             '(select id,name from path_tmp);'))
+  dbHasCompleted(rs)
+  dbGetRowsAffected(rs)
+  dbClearResult(rs)
+load('data/koRes.RData')
+dbWriteTable(conn,'kort_tmp',kortDF,overwrite=TRUE,temporary=TRUE)
+  rs<-dbSendStatement(conn,
+                       paste('INSERT INTO',
+                             'KOrt (id,access,funct,description)', 
+                             '(select id,access,name,description from kort_tmp);'))
+  dbHasCompleted(rs)
+  dbGetRowsAffected(rs)
+  dbClearResult(rs)
+dbWriteTable(conn,'kpath_tmp',kegg,overwrite=TRUE,temporary=TRUE)
+  rs<-dbSendStatement(conn,
+                       paste('INSERT INTO',
+                             'keggpath_KOrt (keggpathID,KOrtid)', 
+                             '(select p.id,k.id from kpath_tmp t join path_tmp p on t.ko=p.ko join KOrt k on t."K"=k.access);'))
+  dbHasCompleted(rs)
+  dbGetRowsAffected(rs)
+  dbClearResult(rs)
+
+```
+
+
+# Close connection
+```{r disconnect}
+dbDisconnect(conn)
+```
+
+
+# Appendix {.tabset}
+## Functions
+```{r functions, eval=FALSE, include=TRUE}
+```
+
+## Setup R
+```{r setup, eval=FALSE}
+```
+
+## Versions
+### Document version
+```{r docVersion, echo=FALSE, results='asis', cache=FALSE}
+cat(params$version)
+```
+
+### Session Info
+```{r sessionInfo, echo=FALSE, results='asis', class='text', warning=FALSE}
+pander(devtools::session_info())
+```
+
