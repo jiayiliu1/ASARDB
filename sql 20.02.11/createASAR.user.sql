@@ -1,0 +1,3 @@
+CREATE USER "asar" WITH PASSWORD 'asar' NAME 'ASAR Explorer' SCHEMA "sys";
+CREATE SCHEMA "asar" AUTHORIZATION "asar";
+ALTER USER "asar" SET SCHEMA "asar";
